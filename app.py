@@ -1,12 +1,14 @@
 import pandas as pd
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Flowable
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 from reportlab.lib.units import mm
 from reportlab.graphics.shapes import Drawing, Rect, String
+from reportlab.graphics import renderPDF
 from reportlab.lib.enums import TA_CENTER
 from datetime import datetime
+from typing import Any, cast, List
 
 
 df = pd.read_csv("Eng 3 Months-Quiz 5-responses.csv")
@@ -30,20 +32,35 @@ for i, q in enumerate(question_cols):
 
 # Sort by lowest correct
 hardest = sorted(question_stats, key=lambda x: x["Correct %"])[:3]
-
 # Small  draw horizontal percentage bars 
-def make_bar(percent, width=120, height=12):
-    width = max(40, float(width))
+class DrawingFlowable(Flowable):
+    def __init__(self, drawing, width=None, height=None):
+        super().__init__()
+        self.drawing = drawing
+        self.width = width if width is not None else getattr(drawing, 'width', 0)
+        self.height = height if height is not None else getattr(drawing, 'height', 0)
+
+    def wrap(self, availWidth, availHeight):
+        return (self.width, self.height)
+
+    def draw(self):
+        # render the graphics drawing onto the current canvas
+        renderPDF.draw(self.drawing, self.canv, 0, 0)
+def make_bar(percent: float, width: float = 120.0, height: float = 12.0) -> DrawingFlowable:
+    # ensure numeric floats for layout math (accept ints/floats)
+    width = float(width)
+    width = max(40.0, width)
     d = Drawing(width, height)
-    d.add(Rect(0, 0, width, height, strokeColor=colors.black, fillColor=colors.lightgrey))
-    fill_w = max(0, min(width * (percent / 100.0), width))
+    # cast colors to Any so the static type checker accepts them
+    d.add(Rect(0, 0, width, height, strokeColor=cast(Any, colors.black), fillColor=cast(Any, colors.lightgrey)))
+    fill_w = max(0.0, min(width * (percent / 100.0), width))
     bar_color = colors.green if percent >= 70 else colors.orange if percent >= 40 else colors.red
-    d.add(Rect(0, 0, fill_w, height, strokeColor=None, fillColor=bar_color))
-    padding = 4
-    text_x = fill_w + padding if fill_w + 30 < width else max(width - 30, padding)
-    text_x = min(max(text_x, padding), width - 4)
-    d.add(String(text_x, height / 4, f"{percent}%", fontSize=8, fillColor=colors.black))
-    return d
+    d.add(Rect(0, 0, fill_w, height, strokeColor=cast(Any, None), fillColor=cast(Any, bar_color)))
+    padding = 4.0
+    text_x = fill_w + padding if fill_w + 30.0 < width else max(width - 30.0, padding)
+    text_x = min(max(text_x, padding), width - 4.0)
+    d.add(String(text_x, height / 4, f"{percent}%", fontSize=8, fillColor=cast(Any, colors.black)))
+    return DrawingFlowable(d, width=width, height=height)
 
 # Generate PDF
 styles = getSampleStyleSheet()
@@ -96,23 +113,26 @@ story.append(Spacer(1, 12))
 story.append(Paragraph("<b>Question Performance</b>", styles['Heading2']))
 
 # Table with a visual bar column
-table_data = [["Question", "Correct %", "Wrong %", "Visual"]]
+col_widths = [doc.width * 0.45, doc.width * 0.12, doc.width * 0.12, doc.width * 0.31]
+visual_col_width = col_widths[3]
+table_data: List[List[Any]] = [
+    [
+        Paragraph("<b>Question</b>", styles['Normal']),
+        Paragraph("<b>Correct %</b>", styles['Normal']),
+        Paragraph("<b>Wrong %</b>", styles['Normal']),
+        Paragraph("<b>Visual</b>", styles['Normal'])
+    ]
+]
+
 for q in question_stats:
     pct = q["Correct %"]
 
-    table_data.append([Paragraph(q["Question"], styles['Normal']), Paragraph(f"{pct}%", styles['Normal']), Paragraph(f"{q['Wrong %']}%", styles['Normal']), None])
-
-
-col_widths = [doc.width * 0.45, doc.width * 0.12, doc.width * 0.12, doc.width * 0.31]
-
-visual_col_width = col_widths[3]
-for i in range(1, len(table_data)):
-    pct_text = table_data[i][1].getPlainText() if hasattr(table_data[i][1], 'getPlainText') else ''
-    try:
-        pct_val = float(pct_text.replace('%', ''))
-    except:
-        pct_val = 0.0
-    table_data[i][3] = make_bar(round(pct_val, 2), width=visual_col_width - 8)
+    table_data.append([
+        Paragraph(q["Question"], styles['Normal']),
+        Paragraph(f"{pct}%", styles['Normal']),
+        Paragraph(f"{q['Wrong %']}%", styles['Normal']),
+        make_bar(round(pct, 2), width=visual_col_width - 8)
+    ])
 
 t = Table(table_data, colWidths=col_widths, hAlign="LEFT")
 
