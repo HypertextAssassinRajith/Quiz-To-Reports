@@ -18,8 +18,7 @@ from datetime import datetime
 from typing import Any, cast, List
 
 
-# Load the CSV containing the quiz responses. Change this filename if you want to use another quiz file.
-# question text we find to show as the prompt in the report.
+# Load the CSV containing the quiz responses. Change this filename if you want to use another quiz file. (This used moodle defult export format)
 df = pd.read_csv("Eng 3 Months-Quiz 6-responses.csv")
 
 # Detect question indices by presence of Response and Right answer columns
