@@ -1,3 +1,10 @@
+# A small, friendly script that reads quiz responses and creates a student-friendly PDF report.
+# It does three simple things:
+# 1) load the CSV export from your quiz platform,
+# 2) compute per-question stats (percent correct / wrong), and
+# 3) render a neat PDF with question text, options and a small progress bar for each question.
+# The goal is to make a report teachers or students can read quickly — no data wrangling required.
+
 import pandas as pd
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Flowable
@@ -11,7 +18,8 @@ from datetime import datetime
 from typing import Any, cast, List
 
 
-# Load the CSV (use the new file provided)
+# Load the CSV containing the quiz responses. Change this filename if you want to use another quiz file.
+# question text we find to show as the prompt in the report.
 df = pd.read_csv("Eng 3 Months-Quiz 6-responses.csv")
 
 # Detect question indices by presence of Response and Right answer columns
@@ -94,6 +102,8 @@ hardest = sorted(question_stats, key=lambda x: x["Correct %"])[:3]
 
 # Small  draw horizontal percentage bars 
 class DrawingFlowable(Flowable):
+    # DrawingFlowable wraps a ReportLab drawing so we can drop it into a table cell like any other element.
+    # Think of it as turning a tiny graphic into a normal object the PDF builder understands.
     def __init__(self, drawing, width=None, height=None):
         super().__init__()
         self.drawing = drawing
@@ -101,21 +111,28 @@ class DrawingFlowable(Flowable):
         self.height = height if height is not None else getattr(drawing, 'height', 0)
 
     def wrap(self, availWidth, availHeight):
+        # Tell ReportLab the size we'll take so layout works correctly.
         return (self.width, self.height)
 
     def draw(self):
-        # render the graphics drawing onto the current canvas
+        # When the PDF is being rendered, draw the graphic on the canvas.
         renderPDF.draw(self.drawing, self.canv, 0, 0)
+
+# Helper to create a small horizontal progress bar showing percent correct.
+# It returns something we can insert straight into a table cell.
 def make_bar(percent: float, width: float = 120.0, height: float = 12.0) -> DrawingFlowable:
-    # ensure numeric floats for layout math (accept ints/floats)
+    # Make sure the bar has a sensible minimum width and compute how much of it to fill.
     width = float(width)
     width = max(40.0, width)
     d = Drawing(width, height)
-    # cast colors to Any so the static type checker accepts them
+
+    # Background track and a colored filled portion based on performance.
     d.add(Rect(0, 0, width, height, strokeColor=cast(Any, colors.black), fillColor=cast(Any, colors.lightgrey)))
     fill_w = max(0.0, min(width * (percent / 100.0), width))
     bar_color = colors.green if percent >= 70 else colors.orange if percent >= 40 else colors.red
     d.add(Rect(0, 0, fill_w, height, strokeColor=cast(Any, None), fillColor=cast(Any, bar_color)))
+
+    # Draw the percent label inside the bar so it never spills outside the cell.
     padding = 4.0
     text_x = fill_w + padding if fill_w + 30.0 < width else max(width - 30.0, padding)
     text_x = min(max(text_x, padding), width - 4.0)
@@ -135,7 +152,7 @@ title_style = ParagraphStyle(
 meta_style = ParagraphStyle('Meta', parent=styles['Normal'], fontSize=9, textColor=colors.grey)
 
 # Add comfortable margins
-doc = SimpleDocTemplate("Quiz_Report.pdf", pagesize=A4, leftMargin=15*mm, rightMargin=15*mm, topMargin=15*mm, bottomMargin=15*mm)
+doc = SimpleDocTemplate("Quiz_Report.pdf", pagesize=A4, leftMargin=6*mm, rightMargin=6*mm, topMargin=10*mm, bottomMargin=10*mm)
 story = []
 
 # Title block
@@ -246,14 +263,140 @@ t.setStyle(TableStyle([
     ('BOX', (0, 0), (-1, -1), 0.8, colors.grey),
     ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.grey),
     ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f6f6f6')]),
-    ('LEFTPADDING', (0, 0), (-1, -1), 6),
-    ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+    ('LEFTPADDING', (0, 0), (-1, -1), 4),
+    ('RIGHTPADDING', (0, 0), (-1, -1), 4),
     ('TOPPADDING', (0, 0), (-1, 0), 8),
     ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
 ]))
 
 story.append(t)
 
+# Add a small gap and then a student results table so teachers can see individual marks
+story.append(Spacer(1, 12))
+story.append(Paragraph("<b>Student Results</b>", styles['Heading2']))
+
+# Calculate how many students completed the quiz out of the total enrolled (excluding system accounts)
+skip_usernames = { 'admin', 'rajithsanjaya' }
+usernames_series = df.get('Username', pd.Series(dtype=str)).dropna().astype(str).str.strip()
+valid_usernames = [u for u in usernames_series if u and u.lower() not in skip_usernames]
+total_enrolled = len(set([u.lower() for u in valid_usernames]))
+
+# Count unique students who have finished or have a numeric grade
+completed_usernames = set()
+for _, row in df.iterrows():
+    username = str(row.get('Username', '')).strip()
+    if not username or username.lower() in skip_usernames:
+        continue
+    status = str(row.get('Status', '')).strip().lower()
+    grade_raw = row.get('Grade/100.00', None)
+    try:
+        grade = None if pd.isna(grade_raw) else float(grade_raw)
+    except Exception:
+        grade = None
+    if status == 'finished' or grade is not None:
+        completed_usernames.add(username.lower())
+
+completed = len(completed_usernames)
+percent_done = round((completed / total_enrolled) * 100, 1) if total_enrolled > 0 else 0
+story.append(Paragraph(f"Students completed: {completed} / {total_enrolled} ({percent_done}%)", styles['Normal']))
+story.append(Spacer(1, 8))
+
+# Build a list of students with basic info and their grade
+students = []
+# usernames to skip from the results table (lowercase)
+skip_usernames = { 'admin', 'rajithsanjaya' }
+for _, row in df.iterrows():
+    last = str(row.get('Last name', '')).strip()
+    first = str(row.get('First name', '')).strip()
+    name = f"{first} {last}".strip() or str(row.get('Username', '')).strip()
+    username = str(row.get('Username', '')).strip()
+    # skip system/admin or other accounts we don't want in the student list
+    if username and username.lower() in skip_usernames:
+        continue
+    email = str(row.get('Email address', '')).strip()
+    status = str(row.get('Status', '')).strip()
+    duration = str(row.get('Duration', '')).strip()
+    grade_raw = row.get('Grade/100.00', None)
+    try:
+        grade = None if pd.isna(grade_raw) else float(grade_raw)
+    except Exception:
+        grade = None
+    students.append({
+        'Name': name,
+        'Username': username,
+        'Email': email,
+        'Grade': grade,
+        'Status': status,
+        'Duration': duration
+    })
+
+# Sort students by grade (highest first), keep those without grade at bottom
+students = sorted(students, key=lambda s: (s['Grade'] is not None, s['Grade'] if s['Grade'] is not None else -1), reverse=True)
+
+# Prepare table data for students
+student_header_style = ParagraphStyle('StudentHeader', parent=styles['Normal'], fontSize=9, alignment=TA_CENTER, textColor=colors.whitesmoke)
+student_small = ParagraphStyle('StudentSmall', parent=styles['Normal'], fontSize=8)
+
+student_table = []
+student_table.append([
+    Paragraph('Name', student_header_style),
+    Paragraph('Username', student_header_style),
+    Paragraph('Email', student_header_style),
+    Paragraph('Grade', student_header_style),
+    Paragraph('Status', student_header_style),
+    Paragraph('Duration', student_header_style),
+])
+
+# Track which rows are 'not attempted' so we can highlight them
+not_attempted_rows = []
+for idx, s in enumerate(students):
+    name_para = Paragraph(s['Name'], student_small)
+    username_para = Paragraph(s['Username'], student_small)
+    email_para = Paragraph(s['Email'], student_small)
+    grade_text = f"{s['Grade']:.2f}" if s['Grade'] is not None else '-'
+    grade_para = Paragraph(grade_text, student_small)
+    status_text = s['Status'] or '-'
+    status_para = Paragraph(status_text, student_small)
+    duration_para = Paragraph(s['Duration'] or '-', student_small)
+    student_table.append([name_para, username_para, email_para, grade_para, status_para, duration_para])
+
+    # Consider a student 'not attempted' if they don't have a numeric grade or didn't finish
+    status_norm = str(s['Status']).strip().lower() if s['Status'] else ''
+    if s['Grade'] is None or status_norm != 'finished':
+        # table header occupies row 0, so first student row is 1 -> add 1 to idx
+        not_attempted_rows.append(1 + idx)
+
+# Column widths that fit the page nicely
+student_col_widths = [doc.width * 0.28, doc.width * 0.12, doc.width * 0.30, doc.width * 0.08, doc.width * 0.12, doc.width * 0.10]
+
+stu_t = Table(student_table, colWidths=student_col_widths, hAlign='LEFT')
+
+# Base table style
+style_cmds = [
+    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2b7a78')),
+    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+    ('ALIGN', (3, 1), (3, -1), 'CENTER'),
+    ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+    ('BOX', (0, 0), (-1, -1), 0.6, colors.grey),
+    ('INNERGRID', (0, 0), (-1, -1), 0.3, colors.grey),
+    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#fbfbfb')]),
+    ('FONTSIZE', (0, 0), (-1, -1), 8),
+    ('LEFTPADDING', (0, 0), (-1, -1), 4),
+    ('RIGHTPADDING', (0, 0), (-1, -1), 4),
+]
+
+# Highlight rows where students did not attempt the quiz (light yellow background and muted text)
+for r in not_attempted_rows:
+    style_cmds.append(('BACKGROUND', (0, r), (-1, r), colors.HexColor('#fff3cd')))
+    style_cmds.append(('TEXTCOLOR', (0, r), (-1, r), colors.HexColor('#6c2d00')))
+
+stu_t.setStyle(TableStyle(style_cmds))
+
+story.append(Spacer(1, 8))
+story.append(stu_t)
+
+# Footer and build the document
 story.append(Spacer(1, 10))
 story.append(Paragraph("Generated by Quiz-To-Reports", meta_style))
 
