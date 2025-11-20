@@ -6,7 +6,7 @@
 # The goal is to make a report teachers or students can read quickly — no data wrangling required.
 
 import pandas as pd
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Flowable
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
@@ -19,7 +19,7 @@ from typing import Any, cast, List
 
 
 # Load the CSV containing the quiz responses. Change this filename if you want to use another quiz file. (This used moodle defult export format)
-df = pd.read_csv("Eng 3 Months-Quiz 6-responses.csv")
+df = pd.read_csv("Eng 3 Months-Quiz 7-responses.csv")
 
 # Detect question indices by presence of Response and Right answer columns
 max_questions = 0
@@ -151,7 +151,7 @@ title_style = ParagraphStyle(
 meta_style = ParagraphStyle('Meta', parent=styles['Normal'], fontSize=9, textColor=colors.grey)
 
 # Add comfortable margins
-doc = SimpleDocTemplate("Quiz_Report.pdf", pagesize=A4, leftMargin=6*mm, rightMargin=6*mm, topMargin=10*mm, bottomMargin=10*mm)
+doc = SimpleDocTemplate("Quiz_Report.pdf", pagesize=landscape(A4), leftMargin=6*mm, rightMargin=6*mm, topMargin=10*mm, bottomMargin=10*mm)
 story = []
 
 # Title block
@@ -276,23 +276,48 @@ story.append(Paragraph("<b>Student Results</b>", styles['Heading2']))
 
 # Calculate how many students completed the quiz out of the total enrolled (excluding system accounts)
 skip_usernames = { 'admin', 'rajithsanjaya' }
+# Count unique enrolled usernames (exclude system accounts)
 usernames_series = df.get('Username', pd.Series(dtype=str)).dropna().astype(str).str.strip()
 valid_usernames = [u for u in usernames_series if u and u.lower() not in skip_usernames]
 total_enrolled = len(set([u.lower() for u in valid_usernames]))
 
-# Count unique students who have finished or have a numeric grade
+# Prepare a DataFrame that contains only the highest-grade attempt per student
+df_users = df.copy()
+# Ensure we have a username series we can manipulate safely
+if 'Username' in df_users.columns:
+    username_series = df_users['Username'].astype(str).str.strip()
+else:
+    username_series = pd.Series([''] * len(df_users))
+
+# normalized lowercase username for grouping
+df_users['Username_lc'] = username_series.str.lower()
+
+# safe numeric grade column; missing -> NaN then fill with -1 so missing attempts sort last
+grade_col = 'Grade/100.00'
+if grade_col in df_users.columns:
+    grade_series = pd.to_numeric(df_users[grade_col], errors='coerce')
+else:
+    grade_series = pd.Series([float('nan')] * len(df_users))
+
+df_users['grade_val'] = grade_series.fillna(-1)
+
+# consider only rows with a username and not in skip list
+df_sel = df_users[(df_users['Username_lc'] != '') & (~df_users['Username_lc'].isin(skip_usernames))]
+
+# For each username pick the row with the highest grade_val
+if not df_sel.empty:
+    best_idx = df_sel.groupby('Username_lc')['grade_val'].idxmax()
+    df_best = df_sel.loc[best_idx].copy()
+else:
+    df_best = df_sel.copy()
+
+# Count how many unique students completed based on the best attempt per student
 completed_usernames = set()
-for _, row in df.iterrows():
+for _, row in df_best.iterrows():
     username = str(row.get('Username', '')).strip()
-    if not username or username.lower() in skip_usernames:
-        continue
     status = str(row.get('Status', '')).strip().lower()
-    grade_raw = row.get('Grade/100.00', None)
-    try:
-        grade = None if pd.isna(grade_raw) else float(grade_raw)
-    except Exception:
-        grade = None
-    if status == 'finished' or grade is not None:
+    grade_val = row.get('grade_val', -1)
+    if status == 'finished' or (isinstance(grade_val, (int, float)) and grade_val >= 0):
         completed_usernames.add(username.lower())
 
 completed = len(completed_usernames)
@@ -300,24 +325,19 @@ percent_done = round((completed / total_enrolled) * 100, 1) if total_enrolled > 
 story.append(Paragraph(f"Students completed: {completed} / {total_enrolled} ({percent_done}%)", styles['Normal']))
 story.append(Spacer(1, 8))
 
-# Build a list of students with basic info and their grade
+# Build a list of students using only the best (highest-grade) attempt per username
 students = []
-# usernames to skip from the results table (lowercase)
-skip_usernames = { 'admin', 'rajithsanjaya' }
-for _, row in df.iterrows():
+for _, row in df_best.iterrows():
     last = str(row.get('Last name', '')).strip()
     first = str(row.get('First name', '')).strip()
     name = f"{first} {last}".strip() or str(row.get('Username', '')).strip()
     username = str(row.get('Username', '')).strip()
-    # skip system/admin or other accounts we don't want in the student list
-    if username and username.lower() in skip_usernames:
-        continue
     email = str(row.get('Email address', '')).strip()
     status = str(row.get('Status', '')).strip()
     duration = str(row.get('Duration', '')).strip()
-    grade_raw = row.get('Grade/100.00', None)
+    grade_val = row.get('grade_val', None)
     try:
-        grade = None if pd.isna(grade_raw) else float(grade_raw)
+        grade = None if grade_val is None or (isinstance(grade_val, (int, float)) and grade_val < 0) else float(grade_val)
     except Exception:
         grade = None
     students.append({
